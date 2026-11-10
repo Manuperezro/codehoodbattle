@@ -60,6 +60,28 @@ export const StudentChampionshipView: React.FC = () => {
         .select('*')
         .eq('session_id', activeSessionId);
 
+      const { data: scoreData } = await supabase
+        .from('scores')
+        .select('*')
+        .eq('session_id', activeSessionId);
+
+      const currentRoundIdx = sData ? sData.current_round_index : 0;
+      const mappedScores: RoundSubmission[] = (scoreData || []).map((s) => ({
+        id: s.id,
+        sessionId: s.session_id,
+        playerId: s.player_id,
+        nickname: '',
+        challengeId: s.challenge_id,
+        roundIndex: s.round_index,
+        submittedCode: '',
+        isCorrect: true,
+        hintsUsed: 0,
+        timeTakenSeconds: 0,
+        pointsAwarded: s.total_points,
+        submittedAt: s.awarded_at,
+      }));
+      setSubmissions(mappedScores);
+
       if (sData) {
         setSession({
           id: sData.id,
@@ -74,17 +96,23 @@ export const StudentChampionshipView: React.FC = () => {
         });
       }
       if (pData) {
-        const mapped: SessionPlayer[] = pData.map((row) => ({
-          id: row.id,
-          sessionId: row.session_id,
-          anonymousAuthId: row.anonymous_auth_id,
-          nickname: row.nickname,
-          totalScore: row.total_score,
-          challengesCompleted: row.challenges_completed,
-          currentRoundSubmitted: row.current_round_submitted,
-          joinedAt: row.joined_at,
-          lastSeenAt: row.last_seen_at,
-        }));
+        const mapped: SessionPlayer[] = pData.map((row) => {
+          const submittedThisRound = mappedScores.some(
+            (sc) =>
+              sc.playerId === row.id && sc.roundIndex === currentRoundIdx
+          );
+          return {
+            id: row.id,
+            sessionId: row.session_id,
+            anonymousAuthId: row.anonymous_auth_id,
+            nickname: row.nickname,
+            totalScore: row.total_score,
+            challengesCompleted: row.challenges_completed,
+            currentRoundSubmitted: submittedThisRound,
+            joinedAt: row.joined_at,
+            lastSeenAt: row.last_seen_at,
+          };
+        });
         setAllPlayers(mapped);
         const me = mapped.find((p) => p.id === activePlayerId);
         if (me) setPlayer(me);
@@ -128,6 +156,18 @@ export const StudentChampionshipView: React.FC = () => {
             event: '*',
             schema: 'public',
             table: 'session_players',
+            filter: `session_id=eq.${session.id}`,
+          },
+          () => {
+            refreshSessionState(session.id, player.id);
+          }
+        )
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'scores',
             filter: `session_id=eq.${session.id}`,
           },
           () => {

@@ -40,6 +40,7 @@ export const TeacherDashboard: React.FC = () => {
   const [teacherEmail, setTeacherEmail] = useState<string>('');
   const [teacherPassword, setTeacherPassword] = useState<string>('');
   const [authError, setAuthError] = useState<string | null>(null);
+  const [unregisteredUuid, setUnregisteredUuid] = useState<string | null>(null);
   const [isTeacherAuthenticated, setIsTeacherAuthenticated] = useState<boolean>(
     !isSupabaseConfigured // In Demo Mode, allow exploring Demo Teacher Preview with clear banner
   );
@@ -62,6 +63,98 @@ export const TeacherDashboard: React.FC = () => {
 
   const selectedPack =
     CHALLENGE_PACKS.find((p) => p.id === selectedPackId) || CHALLENGE_PACKS[0];
+
+  const loadCloudSessionDetails = async (sessionId: string, roundIdxOverride?: number) => {
+    if (!supabase) return;
+    const { data: sData } = await supabase
+      .from('game_sessions')
+      .select('*')
+      .eq('id', sessionId)
+      .maybeSingle();
+
+    const activeRoundIdx =
+      typeof roundIdxOverride === 'number'
+        ? roundIdxOverride
+        : sData
+        ? sData.current_round_index
+        : session?.currentRoundIndex || 0;
+
+    if (sData) {
+      setSession({
+        id: sData.id,
+        pin: sData.pin,
+        title: sData.title,
+        teacherId: sData.teacher_id,
+        packId: sData.pack_id,
+        challengeIds: sData.challenge_ids,
+        currentRoundIndex: sData.current_round_index,
+        status: sData.status,
+        createdAt: sData.created_at,
+      });
+    }
+
+    const { data: scoreRows } = await supabase
+      .from('scores')
+      .select('*')
+      .eq('session_id', sessionId);
+
+    const mappedScores: RoundSubmission[] = (scoreRows || []).map((s) => ({
+      id: s.id,
+      sessionId: s.session_id,
+      playerId: s.player_id,
+      nickname: '',
+      challengeId: s.challenge_id,
+      roundIndex: s.round_index,
+      submittedCode: '',
+      isCorrect: true,
+      hintsUsed: 0,
+      timeTakenSeconds: 0,
+      pointsAwarded: s.total_points,
+      submittedAt: s.awarded_at,
+    }));
+    setSubmissions(mappedScores);
+
+    const { data: pRows } = await supabase
+      .from('session_players')
+      .select('*')
+      .eq('session_id', sessionId);
+
+    if (pRows) {
+      setPlayers(
+        pRows.map((r) => ({
+          id: r.id,
+          sessionId: r.session_id,
+          anonymousAuthId: r.anonymous_auth_id,
+          nickname: r.nickname,
+          totalScore: r.total_score,
+          challengesCompleted: r.challenges_completed,
+          currentRoundSubmitted: mappedScores.some(
+            (sc) => sc.playerId === r.id && sc.roundIndex === activeRoundIdx
+          ),
+          joinedAt: r.joined_at,
+          lastSeenAt: r.last_seen_at,
+        }))
+      );
+    }
+  };
+
+  const loadTeacherLatestSession = async (teacherId: string) => {
+    if (!supabase) return;
+    const { data: latestSession } = await supabase
+      .from('game_sessions')
+      .select('*')
+      .eq('teacher_id', teacherId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (latestSession) {
+      await loadCloudSessionDetails(
+        latestSession.id,
+        latestSession.current_round_index
+      );
+    }
+  };
 
   // Check teacher session if Supabase is configured
   useEffect(() => {
@@ -86,6 +179,7 @@ export const TeacherDashboard: React.FC = () => {
         if (profile) {
           setIsTeacherAuthenticated(true);
           setVerifiedTeacherId(profile.id);
+          await loadTeacherLatestSession(profile.id);
         }
       }
     });
@@ -95,27 +189,8 @@ export const TeacherDashboard: React.FC = () => {
   useEffect(() => {
     if (isSupabaseConfigured && supabase && session) {
       const sb = supabase;
-      const refreshCloudSession = async () => {
-        const { data: pRows } = await sb
-          .from('session_players')
-          .select('*')
-          .eq('session_id', session.id);
-
-        if (pRows) {
-          setPlayers(
-            pRows.map((r) => ({
-              id: r.id,
-              sessionId: r.session_id,
-              anonymousAuthId: r.anonymous_auth_id,
-              nickname: r.nickname,
-              totalScore: r.total_score,
-              challengesCompleted: r.challenges_completed,
-              currentRoundSubmitted: r.current_round_submitted,
-              joinedAt: r.joined_at,
-              lastSeenAt: r.last_seen_at,
-            }))
-          );
-        }
+      const refreshCloudSession = () => {
+        loadCloudSessionDetails(session.id);
       };
 
       const channel = sb
@@ -180,15 +255,18 @@ export const TeacherDashboard: React.FC = () => {
       .maybeSingle();
 
     if (profErr || !profile) {
+      setUnregisteredUuid(data.user.id);
       await supabase.auth.signOut();
       setAuthError(
-        'Access denied: Your account is not registered in teacher_profiles.'
+        'Your user exists in Supabase Auth, but is not yet registered in public.teacher_profiles. Run the 2-line SQL shown below in the Supabase SQL Editor!'
       );
       return;
     }
 
+    setUnregisteredUuid(null);
     setIsTeacherAuthenticated(true);
     setVerifiedTeacherId(profile.id);
+    await loadTeacherLatestSession(profile.id);
   };
 
   const handleCreateChampionship = async (e: React.FormEvent) => {
@@ -261,14 +339,12 @@ export const TeacherDashboard: React.FC = () => {
         .update(updatePayload)
         .eq('id', session.id);
 
-      setSession({
-        ...session,
-        status: nextStatus,
-        currentRoundIndex:
-          typeof nextRoundIndex === 'number'
-            ? nextRoundIndex
-            : session.currentRoundIndex,
-      });
+      await loadCloudSessionDetails(
+        session.id,
+        typeof nextRoundIndex === 'number'
+          ? nextRoundIndex
+          : session.currentRoundIndex
+      );
       return;
     }
 
@@ -355,8 +431,15 @@ export const TeacherDashboard: React.FC = () => {
             </div>
 
             {authError && (
-              <div className="p-3 rounded-xl bg-rose-950/60 border border-rose-500/50 text-rose-200 text-xs">
-                {authError}
+              <div className="p-3 rounded-xl bg-rose-950/60 border border-rose-500/50 text-rose-200 text-xs space-y-2">
+                <div>{authError}</div>
+                {unregisteredUuid && (
+                  <pre className="p-2 rounded bg-slate-950 text-amber-300 font-mono text-[11px] overflow-x-auto select-all">
+{`insert into public.teacher_profiles (id, display_name)
+values ('${unregisteredUuid}', 'Profesor')
+on conflict (id) do nothing;`}
+                  </pre>
+                )}
               </div>
             )}
 

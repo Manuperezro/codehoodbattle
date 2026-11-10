@@ -171,7 +171,15 @@ export async function joinChampionshipWithPin(
     };
   }
 
-  const { anonymousId } = await ensureAnonymousStudentSession();
+  const { anonymousId, error: anonErr } = await ensureAnonymousStudentSession();
+  if (anonErr || !anonymousId) {
+    return {
+      ok: false,
+      error:
+        anonErr ||
+        'Could not create an anonymous student session. Please check Supabase Authentication settings.',
+    };
+  }
 
   // If Supabase is configured, query real database
   if (isSupabaseConfigured && supabase) {

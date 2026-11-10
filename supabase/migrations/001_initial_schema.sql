@@ -121,6 +121,7 @@ as $$
 $$;
 
 -- teacher_profiles: Only the teacher themselves can read their profile
+drop policy if exists "Teachers can read own profile" on public.teacher_profiles;
 create policy "Teachers can read own profile"
   on public.teacher_profiles
   for select
@@ -128,23 +129,27 @@ create policy "Teachers can read own profile"
 
 -- game_sessions:
 -- Anyone authenticated (including anonymous students) can view active/lobby sessions to join by PIN
+drop policy if exists "Authenticated users can read sessions" on public.game_sessions;
 create policy "Authenticated users can read sessions"
   on public.game_sessions
   for select
   using (auth.uid() is not null);
 
 -- Only verified teachers who own the session can insert, update, or delete sessions
+drop policy if exists "Verified teachers can create sessions" on public.game_sessions;
 create policy "Verified teachers can create sessions"
   on public.game_sessions
   for insert
   with check (public.is_verified_teacher() and teacher_id = auth.uid());
 
+drop policy if exists "Verified teachers can update own sessions" on public.game_sessions;
 create policy "Verified teachers can update own sessions"
   on public.game_sessions
   for update
   using (public.is_verified_teacher() and teacher_id = auth.uid())
   with check (public.is_verified_teacher() and teacher_id = auth.uid());
 
+drop policy if exists "Verified teachers can delete own sessions" on public.game_sessions;
 create policy "Verified teachers can delete own sessions"
   on public.game_sessions
   for delete
@@ -152,12 +157,14 @@ create policy "Verified teachers can delete own sessions"
 
 -- session_players:
 -- Players in the same session or the owning teacher can view session players
+drop policy if exists "Session participants and teachers can view players" on public.session_players;
 create policy "Session participants and teachers can view players"
   on public.session_players
   for select
   using (auth.uid() is not null);
 
 -- Anonymous students can insert their own player row when joining a lobby
+drop policy if exists "Anonymous students can join lobby as themselves" on public.session_players;
 create policy "Anonymous students can join lobby as themselves"
   on public.session_players
   for insert
@@ -168,6 +175,7 @@ create policy "Anonymous students can join lobby as themselves"
   );
 
 -- Students CANNOT directly update total_score; scores are updated via Edge Function (service_role) or teacher
+drop policy if exists "Teachers can manage players in own sessions" on public.session_players;
 create policy "Teachers can manage players in own sessions"
   on public.session_players
   for delete
@@ -180,11 +188,13 @@ create policy "Teachers can manage players in own sessions"
 
 -- challenge_attempts & scores:
 -- Read access for session leaderboard & teacher analytics
+drop policy if exists "Read scores in session" on public.scores;
 create policy "Read scores in session"
   on public.scores
   for select
   using (auth.uid() is not null);
 
+drop policy if exists "Teachers can read attempts for own sessions" on public.challenge_attempts;
 create policy "Teachers can read attempts for own sessions"
   on public.challenge_attempts
   for select
@@ -226,9 +236,21 @@ end;
 $$;
 
 -- =============================================================================
--- ENABLE SUPABASE REALTIME FOR LIVE LEADERBOARD & LOBBY
+-- ENABLE SUPABASE REALTIME FOR LIVE LEADERBOARD & LOBBY (IDEMPOTENT)
 -- =============================================================================
-alter publication supabase_realtime add table public.game_sessions;
-alter publication supabase_realtime add table public.session_players;
-alter publication supabase_realtime add table public.scores;
+do $$
+begin
+  begin
+    alter publication supabase_realtime add table public.game_sessions;
+  exception when duplicate_object then null;
+  end;
+  begin
+    alter publication supabase_realtime add table public.session_players;
+  exception when duplicate_object then null;
+  end;
+  begin
+    alter publication supabase_realtime add table public.scores;
+  exception when duplicate_object then null;
+  end;
+end $$;
 

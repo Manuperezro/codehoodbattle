@@ -7,6 +7,7 @@
 -- Protect canonical_solution column from being read directly by anonymous/authenticated clients
 revoke select (canonical_solution) on public.challenge_catalogue from anon, authenticated;
 
+drop policy if exists "Anyone can read public challenge metadata" on public.challenge_catalogue;
 create policy "Anyone can read public challenge metadata"
   on public.challenge_catalogue
   for select
