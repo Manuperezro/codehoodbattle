@@ -11,6 +11,7 @@ import {
   RotateCcw,
 } from 'lucide-react';
 import { CHALLENGES, WORLDS } from '../data/challenges';
+import { ACHIEVEMENT_BADGES } from '../data/badges';
 import {
   ChallengeProgress,
   TopicTag,
@@ -65,6 +66,9 @@ export const PracticeArena: React.FC<PracticeArenaProps> = ({
     (sum, p) => sum + (p.xpEarned || 0),
     0
   );
+  const unlockedBadgesCount = ACHIEVEMENT_BADGES.filter((b) =>
+    b.isUnlocked(progress)
+  ).length;
 
   // Topic analysis for Student Results screen (Section 18)
   const topicStats = React.useMemo(() => {
@@ -208,6 +212,16 @@ export const PracticeArena: React.FC<PracticeArenaProps> = ({
             </div>
           </div>
 
+          <div className="px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-700 flex items-center gap-2">
+            <Award className="w-5 h-5 text-orange-400" />
+            <div>
+              <div className="text-[11px] uppercase text-slate-400">Badges</div>
+              <div className="font-mono font-bold text-lg text-orange-300">
+                {unlockedBadgesCount} / {ACHIEVEMENT_BADGES.length}
+              </div>
+            </div>
+          </div>
+
           <button
             type="button"
             onClick={() => {
@@ -321,6 +335,43 @@ export const PracticeArena: React.FC<PracticeArenaProps> = ({
                 </div>
               </div>
             ))}
+          </div>
+          {/* Achievement Badges Showcase */}
+          <div className="space-y-2.5">
+            <h3 className="text-sm font-bold text-amber-300 uppercase font-mono">
+              Achievement Badges ({unlockedBadgesCount}/{ACHIEVEMENT_BADGES.length} Unlocked)
+            </h3>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              {ACHIEVEMENT_BADGES.map((badge) => {
+                const unlocked = badge.isUnlocked(progress);
+                return (
+                  <div
+                    key={badge.id}
+                    className={`p-3 rounded-xl border flex items-start gap-3 transition ${
+                      unlocked
+                        ? 'bg-gradient-to-br from-amber-500/20 to-orange-500/10 border-amber-400/60 text-white shadow-md'
+                        : 'bg-slate-950/70 border-slate-800 text-slate-500 opacity-70'
+                    }`}
+                  >
+                    <span className="text-2xl select-none" aria-hidden="true">
+                      {badge.icon}
+                    </span>
+                    <div>
+                      <div
+                        className={`text-xs font-display font-bold ${
+                          unlocked ? 'text-amber-300' : 'text-slate-400'
+                        }`}
+                      >
+                        {badge.title}
+                      </div>
+                      <p className="text-[11px] text-slate-300 mt-0.5 leading-snug">
+                        {badge.description}
+                      </p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </div>
       )}

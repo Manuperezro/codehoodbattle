@@ -4,21 +4,27 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Python Code Arena | Fix the Code. Beat the Bugs. Become a Python Champion!</title>
-    <script id="root-file-redirect">
-      // If opened directly from disk (file://) at the project root, redirect to the compiled dist/index.html
-      if (
-        window.location.protocol === 'file:' &&
-        !window.location.pathname.replace(/\\/g, '/').includes('/dist/')
-      ) {
-        window.location.replace('./dist/index.html');
-      }
-    </script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet">
+    <link id="fallback-dist-css" rel="stylesheet" href="./dist/assets/app.css">
   </head>
   <body class="bg-arena-bg text-slate-100 antialiased selection:bg-sky-500/30 selection:text-sky-200">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
+    <script id="fallback-dist-js">
+      // If opened directly from disk (file://) or served from the root of a branch on GitHub Pages
+      // where /src/main.tsx is not served by a local Vite dev server, load the compiled bundle in ./dist!
+      if (
+        window.location.protocol === 'file:' ||
+        window.location.hostname.indexOf('github.io') !== -1 ||
+        window.location.port !== '5173'
+      ) {
+        var scriptEl = document.createElement('script');
+        scriptEl.src = './dist/assets/app.js';
+        scriptEl.defer = true;
+        document.body.appendChild(scriptEl);
+      }
+    </script>
   </body>
 </html>

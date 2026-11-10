@@ -3,8 +3,7 @@ node_modules
 .pnp
 .pnp.js
 
-# Build output
-dist
+# Local build logs & caches
 dist-ssr
 *.local
 
@@ -32,4 +31,3 @@ lerna-debug.log*
 *.njsproj
 *.sln
 *.sw?
-
