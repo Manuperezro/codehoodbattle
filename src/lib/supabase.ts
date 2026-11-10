@@ -29,14 +29,64 @@ export const isSupabaseConfigured: boolean =
       !supabaseUrl.includes('your-project-id')
   );
 
+/**
+ * Student Supabase client (uses isolated storageKey 'pca_student_auth_token'
+ * so opening Student and Teacher tabs in the same browser never overwrites the Teacher's JWT).
+ */
 export const supabase: SupabaseClient | null = isSupabaseConfigured
   ? createClient(supabaseUrl, supabaseAnonKey, {
       auth: {
+        storageKey: 'pca_student_auth_token',
         persistSession: true,
         autoRefreshToken: true,
       },
     })
   : null;
+
+/**
+ * Teacher Supabase client (uses isolated storageKey 'pca_teacher_auth_token'
+ * so the teacher's verified session stays active even when testing student views in the same browser).
+ */
+export const teacherSupabase: SupabaseClient | null = isSupabaseConfigured
+  ? createClient(supabaseUrl, supabaseAnonKey, {
+      auth: {
+        storageKey: 'pca_teacher_auth_token',
+        persistSession: true,
+        autoRefreshToken: true,
+      },
+    })
+  : null;
+
+/**
+ * Broadcasts a live session change across both same-browser tabs (BroadcastChannel)
+ * and Supabase Realtime Broadcast so student screens transition rounds immediately.
+ */
+export function notifySessionRoundChange(sessionId: string): void {
+  try {
+    if (typeof BroadcastChannel !== 'undefined') {
+      const bc = new BroadcastChannel('pca_live_sync');
+      bc.postMessage({ type: 'SESSION_UPDATED', sessionId, ts: Date.now() });
+      bc.close();
+    }
+  } catch {
+    // ignore BroadcastChannel errors
+  }
+
+  if (supabase) {
+    const ch = supabase.channel(`broadcast-session-${sessionId}`);
+    ch.subscribe((status) => {
+      if (status === 'SUBSCRIBED') {
+        ch.send({
+          type: 'broadcast',
+          event: 'session-sync',
+          payload: { sessionId, ts: Date.now() },
+        }).finally(() => {
+          supabase.removeChannel(ch);
+        });
+      }
+    });
+  }
+}
 
 /**
  * Ensures the student has an anonymous Supabase session (or local anonymous UUID in Demo Mode).

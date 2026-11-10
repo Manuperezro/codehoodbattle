@@ -17,7 +17,11 @@ import {
   Monitor,
 } from 'lucide-react';
 import { CHALLENGES, CHALLENGE_PACKS } from '../data/challenges';
-import { isSupabaseConfigured, supabase } from '../lib/supabase';
+import {
+  isSupabaseConfigured,
+  notifySessionRoundChange,
+  teacherSupabase as supabase,
+} from '../lib/supabase';
 import {
   buildLeaderboardEntries,
   createNewDemoSession,
@@ -217,7 +221,11 @@ export const TeacherDashboard: React.FC = () => {
         )
         .subscribe();
 
+      // Reliable 2-second polling fallback so teacher screen always stays in sync
+      const pollInterval = setInterval(refreshCloudSession, 2000);
+
       return () => {
+        clearInterval(pollInterval);
         sb.removeChannel(channel);
       };
     }
@@ -330,25 +338,49 @@ export const TeacherDashboard: React.FC = () => {
     sound.playClick();
 
     if (isSupabaseConfigured && supabase) {
-      const updatePayload: Record<string, unknown> = { status: nextStatus };
-      if (typeof nextRoundIndex === 'number') {
-        updatePayload.current_round_index = nextRoundIndex;
-      }
-      await supabase
-        .from('game_sessions')
-        .update(updatePayload)
-        .eq('id', session.id);
-
-      await loadCloudSessionDetails(
-        session.id,
+      const targetRoundIdx =
         typeof nextRoundIndex === 'number'
           ? nextRoundIndex
-          : session.currentRoundIndex
-      );
+          : session.currentRoundIndex;
+
+      // Update local teacher state immediately for snappy UI
+      setSession({
+        ...session,
+        status: nextStatus,
+        currentRoundIndex: targetRoundIdx,
+      });
+
+      const updatePayload: Record<string, unknown> = {
+        status: nextStatus,
+        current_round_index: targetRoundIdx,
+      };
+
+      const { data: updatedRow, error: updateErr } = await supabase
+        .from('game_sessions')
+        .update(updatePayload)
+        .eq('id', session.id)
+        .select('*')
+        .maybeSingle();
+
+      if (updateErr || !updatedRow) {
+        // Teacher session might have been invalidated; prompt re-auth if needed
+        const {
+          data: { session: currentAuth },
+        } = await supabase.auth.getSession();
+        if (!currentAuth) {
+          setIsTeacherAuthenticated(false);
+          setAuthError('Session expired. Please sign in again as Teacher.');
+          return;
+        }
+      }
+
+      notifySessionRoundChange(session.id);
+      await loadCloudSessionDetails(session.id, targetRoundIdx);
       return;
     }
 
     const updated = updateDemoSessionStatus(nextStatus, nextRoundIndex);
+    notifySessionRoundChange(updated.session.id);
     setSession(updated.session);
     setPlayers(updated.players);
     setSubmissions(updated.submissions);

@@ -134,10 +134,34 @@ export const StudentChampionshipView: React.FC = () => {
   useEffect(() => {
     if (!session || !player) return;
 
+    const triggerRefresh = () => {
+      refreshSessionState(session.id, player.id);
+    };
+
+    // 1. Automatic 1.5s background polling so student screens ALWAYS advance rounds
+    // even if WebSockets or Postgres Replication notifications are delayed
+    const pollTimer = setInterval(triggerRefresh, 1500);
+
+    // 2. Same-browser BroadcastChannel for instant (<10ms) multi-tab sync
+    let bc: BroadcastChannel | null = null;
+    try {
+      if (typeof BroadcastChannel !== 'undefined') {
+        bc = new BroadcastChannel('pca_live_sync');
+        bc.onmessage = (ev) => {
+          if (ev.data?.sessionId === session.id) {
+            triggerRefresh();
+          }
+        };
+      }
+    } catch {
+      // ignore BroadcastChannel errors
+    }
+
     if (isSupabaseConfigured && supabase) {
       const sb = supabase;
       const channel = sb
-        .channel(`session-${session.id}`)
+        .channel(`broadcast-session-${session.id}`)
+        .on('broadcast', { event: 'session-sync' }, triggerRefresh)
         .on(
           'postgres_changes',
           {
@@ -146,9 +170,7 @@ export const StudentChampionshipView: React.FC = () => {
             table: 'game_sessions',
             filter: `id=eq.${session.id}`,
           },
-          () => {
-            refreshSessionState(session.id, player.id);
-          }
+          triggerRefresh
         )
         .on(
           'postgres_changes',
@@ -158,9 +180,7 @@ export const StudentChampionshipView: React.FC = () => {
             table: 'session_players',
             filter: `session_id=eq.${session.id}`,
           },
-          () => {
-            refreshSessionState(session.id, player.id);
-          }
+          triggerRefresh
         )
         .on(
           'postgres_changes',
@@ -170,23 +190,24 @@ export const StudentChampionshipView: React.FC = () => {
             table: 'scores',
             filter: `session_id=eq.${session.id}`,
           },
-          () => {
-            refreshSessionState(session.id, player.id);
-          }
+          triggerRefresh
         )
         .subscribe();
 
       return () => {
+        clearInterval(pollTimer);
+        if (bc) bc.close();
         sb.removeChannel(channel);
       };
     }
 
     // Listen to localStorage changes across tabs in Demo Mode
-    const handleStorage = () => {
-      refreshSessionState(session.id, player.id);
+    window.addEventListener('storage', triggerRefresh);
+    return () => {
+      clearInterval(pollTimer);
+      if (bc) bc.close();
+      window.removeEventListener('storage', triggerRefresh);
     };
-    window.addEventListener('storage', handleStorage);
-    return () => window.removeEventListener('storage', handleStorage);
   }, [session?.id, player?.id]);
 
   // Clear lastRoundScore when round index advances
@@ -628,6 +649,7 @@ export const StudentChampionshipView: React.FC = () => {
       )}
 
       <ChallengeArena
+        key={`${session.id}-round-${session.currentRoundIndex}-${currentChallenge.id}`}
         challenge={currentChallenge}
         mode="championship"
         alreadySubmittedInRound={player.currentRoundSubmitted}
