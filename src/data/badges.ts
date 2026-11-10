@@ -89,3 +89,4 @@ export const ACHIEVEMENT_BADGES: AchievementBadge[] = [
       Object.values(progress).filter((p) => p.completed).length >= 30,
   },
 ];
+

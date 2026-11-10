@@ -375,8 +375,29 @@ export async function submitChampionshipRoundCode(params: {
     return { ok: false, pointsAwarded: 0, error: 'Challenge not found.' };
   }
 
-  // If Supabase is configured, invoke the server-side Edge Function / RPC so browser cannot spoof score
+  // If Supabase is configured, invoke the server-side RPC or Edge Function so browser cannot spoof score
   if (isSupabaseConfigured && supabase) {
+    const { data: rpcData, error: rpcErr } = await supabase.rpc(
+      'submit_championship_attempt',
+      {
+        p_session_id: params.sessionId,
+        p_player_id: params.playerId,
+        p_challenge_id: params.challengeId,
+        p_round_index: params.roundIndex,
+        p_submitted_code: params.submittedCode,
+        p_hints_used: params.hintsUsed,
+        p_time_taken_seconds: params.timeTakenSeconds,
+      }
+    );
+
+    if (!rpcErr && rpcData) {
+      return {
+        ok: true,
+        alreadySubmitted: rpcData.alreadySubmitted,
+        pointsAwarded: rpcData.pointsAwarded ?? 0,
+      };
+    }
+
     const { data, error } = await supabase.functions.invoke('validate-submission', {
       body: params,
     });
@@ -385,7 +406,7 @@ export async function submitChampionshipRoundCode(params: {
       return {
         ok: false,
         pointsAwarded: 0,
-        error: error?.message || 'Server validation failed.',
+        error: error?.message || rpcErr?.message || 'Server validation failed.',
       };
     }
 
@@ -603,4 +624,55 @@ export function createNewDemoSession(params: {
   saveDemoState(newSession, samplePlayers, []);
   return { session: newSession, players: samplePlayers, submissions: [] };
 }
+
+/**
+ * Simulates classroom students joining or submitting answers in Demo Mode
+ * so a lecturer can preview the live Teacher Dashboard projector experience.
+ */
+export function simulateDemoClassroomRoundSubmissions(): {
+  session: GameSession;
+  players: SessionPlayer[];
+  submissions: RoundSubmission[];
+} {
+  const demo = getOrCreateDemoSession();
+  const roundIdx = demo.session.currentRoundIndex;
+  const challengeId =
+    demo.session.challengeIds[roundIdx] || demo.session.challengeIds[0];
+  const challenge = CHALLENGES.find((c) => c.id === challengeId) || CHALLENGES[0];
+
+  const updatedSubmissions = [...demo.submissions];
+  const updatedPlayers = demo.players.map((p, idx) => {
+    if (p.currentRoundSubmitted) return p;
+    const pts = idx === 0 ? 145 : idx === 1 ? 125 : 110;
+    updatedSubmissions.push({
+      id: `sim-sub-${p.id}-${roundIdx}-${Date.now()}`,
+      sessionId: demo.session.id,
+      playerId: p.id,
+      nickname: p.nickname,
+      challengeId: challenge.id,
+      roundIndex: roundIdx,
+      submittedCode: challenge.correctSolution,
+      isCorrect: true,
+      hintsUsed: idx === 0 ? 0 : 1,
+      timeTakenSeconds: 18 + idx * 9,
+      pointsAwarded: pts,
+      submittedAt: new Date().toISOString(),
+    });
+    return {
+      ...p,
+      totalScore: p.totalScore + pts,
+      challengesCompleted: p.challengesCompleted + 1,
+      currentRoundSubmitted: true,
+      lastSeenAt: new Date().toISOString(),
+    };
+  });
+
+  saveDemoState(demo.session, updatedPlayers, updatedSubmissions);
+  return {
+    session: demo.session,
+    players: updatedPlayers,
+    submissions: updatedSubmissions,
+  };
+}
+
 

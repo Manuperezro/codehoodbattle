@@ -23,6 +23,7 @@ import {
   createNewDemoSession,
   generateSixDigitPin,
   getOrCreateDemoSession,
+  simulateDemoClassroomRoundSubmissions,
   updateDemoSessionStatus,
 } from '../services/championshipService';
 import {
@@ -90,9 +91,62 @@ export const TeacherDashboard: React.FC = () => {
     });
   }, []);
 
-  // Sync Demo Mode storage updates across tabs
+  // Sync Demo Mode storage updates across tabs or Supabase Realtime in Cloud Mode
   useEffect(() => {
-    if (isSupabaseConfigured) return;
+    if (isSupabaseConfigured && supabase && session) {
+      const sb = supabase;
+      const refreshCloudSession = async () => {
+        const { data: pRows } = await sb
+          .from('session_players')
+          .select('*')
+          .eq('session_id', session.id);
+
+        if (pRows) {
+          setPlayers(
+            pRows.map((r) => ({
+              id: r.id,
+              sessionId: r.session_id,
+              anonymousAuthId: r.anonymous_auth_id,
+              nickname: r.nickname,
+              totalScore: r.total_score,
+              challengesCompleted: r.challenges_completed,
+              currentRoundSubmitted: r.current_round_submitted,
+              joinedAt: r.joined_at,
+              lastSeenAt: r.last_seen_at,
+            }))
+          );
+        }
+      };
+
+      const channel = sb
+        .channel(`teacher-session-${session.id}`)
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'session_players',
+            filter: `session_id=eq.${session.id}`,
+          },
+          refreshCloudSession
+        )
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'scores',
+            filter: `session_id=eq.${session.id}`,
+          },
+          refreshCloudSession
+        )
+        .subscribe();
+
+      return () => {
+        sb.removeChannel(channel);
+      };
+    }
+
     const syncDemo = () => {
       const demo = getOrCreateDemoSession();
       setSession(demo.session);
@@ -101,7 +155,7 @@ export const TeacherDashboard: React.FC = () => {
     };
     window.addEventListener('storage', syncDemo);
     return () => window.removeEventListener('storage', syncDemo);
-  }, []);
+  }, [session?.id]);
 
   const handleTeacherSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -588,6 +642,22 @@ export const TeacherDashboard: React.FC = () => {
                       >
                         <Trophy className="w-4 h-4" /> Reveal Round Leaderboard
                       </button>
+
+                      {!isSupabaseConfigured && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            sound.playSuccess();
+                            const sim = simulateDemoClassroomRoundSubmissions();
+                            setSession(sim.session);
+                            setPlayers(sim.players);
+                            setSubmissions(sim.submissions);
+                          }}
+                          className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-teal-500/20 hover:bg-teal-500/30 text-teal-200 border border-teal-400/40 font-semibold text-xs transition"
+                        >
+                          <Users className="w-4 h-4" /> Simulate Class Answers (Demo)
+                        </button>
+                      )}
                     </>
                   )}
 
@@ -681,13 +751,29 @@ export const TeacherDashboard: React.FC = () => {
                 Review participant scores, most difficult challenges, and topic performance (nicknames only — zero personal data).
               </p>
             </div>
-            <button
-              type="button"
-              onClick={handleDeleteOrResetSession}
-              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40 text-xs font-semibold transition"
-            >
-              <Trash2 className="w-4 h-4" /> Delete Session &amp; Results
-            </button>
+            <div className="flex items-center gap-2">
+              {isSupabaseConfigured && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    sound.playClick();
+                    await supabase?.rpc('cleanup_old_game_sessions', {
+                      days_to_keep: 7,
+                    });
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-xs font-semibold transition"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" /> Clean Up Old Sessions (&gt;7d)
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={handleDeleteOrResetSession}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40 text-xs font-semibold transition"
+              >
+                <Trash2 className="w-4 h-4" /> Delete Session &amp; Results
+              </button>
+            </div>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -714,6 +800,44 @@ export const TeacherDashboard: React.FC = () => {
               <div className="text-3xl font-mono font-bold text-emerald-300 mt-1">
                 {submissions.length}
               </div>
+            </div>
+          </div>
+
+          {/* Most Difficult Challenges in Session */}
+          <div className="p-4 rounded-2xl bg-slate-900/90 border border-slate-800 space-y-2.5">
+            <h3 className="text-sm font-bold text-rose-300 uppercase font-mono">
+              Most Difficult Challenges (Focus Areas for Class Review)
+            </h3>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+              {(session?.challengeIds || ['ch-17', 'ch-23', 'ch-27', 'ch-30'])
+                .slice(-4)
+                .map((cid) => {
+                  const ch = CHALLENGES.find((c) => c.id === cid);
+                  if (!ch) return null;
+                  const chSubs = submissions.filter(
+                    (s) => s.challengeId === ch.id
+                  );
+                  const solvedCount = chSubs.filter((s) => s.isCorrect).length;
+                  return (
+                    <div
+                      key={ch.id}
+                      className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-1"
+                    >
+                      <div className="font-mono text-rose-400 font-bold">
+                        #{ch.number} • {ch.difficulty}
+                      </div>
+                      <div className="font-display font-bold text-white text-sm">
+                        {ch.title}
+                      </div>
+                      <div className="text-slate-400">
+                        Topic: {ch.topicTag}
+                      </div>
+                      <div className="font-mono text-amber-300 pt-1">
+                        Solved in session: {solvedCount} / {players.length}
+                      </div>
+                    </div>
+                  );
+                })}
             </div>
           </div>
 
