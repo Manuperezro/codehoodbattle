@@ -215,6 +215,24 @@ export const StudentChampionshipView: React.FC = () => {
     setLastRoundScore(null);
   }, [session?.currentRoundIndex]);
 
+  // Automatically restore active student session on mount (if page refreshed or switched tabs)
+  useEffect(() => {
+    const ticket = getSavedRejoinTicket();
+    if (!ticket || session || player) return;
+    let cancelled = false;
+    joinChampionshipWithPin(ticket.pin, ticket.nickname).then(async (res) => {
+      if (cancelled) return;
+      if (res.ok && res.session && res.player) {
+        setSession(res.session);
+        setPlayer(res.player);
+        await refreshSessionState(res.session.id, res.player.id);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const handleJoinSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setJoinError(null);
@@ -257,6 +275,7 @@ export const StudentChampionshipView: React.FC = () => {
 
   const handleLeaveSession = () => {
     sound.playClick();
+    saveRejoinTicket(null);
     setSession(null);
     setPlayer(null);
   };
