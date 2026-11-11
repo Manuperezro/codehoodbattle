@@ -5,6 +5,7 @@ import {
   Play,
   Pause,
   SkipForward,
+  SkipBack,
   Trophy,
   Trash2,
   Users,
@@ -15,6 +16,13 @@ import {
   KeyRound,
   RefreshCw,
   Monitor,
+  Eye,
+  EyeOff,
+  Clock,
+  Code2,
+  Terminal,
+  Lightbulb,
+  Sparkles,
 } from 'lucide-react';
 import { CHALLENGES, CHALLENGE_PACKS } from '../data/challenges';
 import {
@@ -37,7 +45,14 @@ import {
   TopicTag,
 } from '../types/game';
 import { LiveLeaderboard } from './LiveLeaderboard';
+import { HighlightedPythonLine } from './SyntaxHighlighter';
 import { sound } from '../utils/sound';
+
+function formatTimer(seconds: number): string {
+  const mins = Math.floor(Math.max(0, seconds) / 60);
+  const secs = Math.floor(Math.max(0, seconds) % 60);
+  return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+}
 
 export const TeacherDashboard: React.FC = () => {
   // Auth state when Supabase is configured
@@ -46,7 +61,7 @@ export const TeacherDashboard: React.FC = () => {
   const [authError, setAuthError] = useState<string | null>(null);
   const [unregisteredUuid, setUnregisteredUuid] = useState<string | null>(null);
   const [isTeacherAuthenticated, setIsTeacherAuthenticated] = useState<boolean>(
-    !isSupabaseConfigured // In Demo Mode, allow exploring Demo Teacher Preview with clear banner
+    !isSupabaseConfigured
   );
   const [verifiedTeacherId, setVerifiedTeacherId] = useState<string | null>(
     !isSupabaseConfigured ? 'demo-teacher-id' : null
@@ -65,10 +80,47 @@ export const TeacherDashboard: React.FC = () => {
   const [submissions, setSubmissions] = useState<RoundSubmission[]>([]);
   const [activeTab, setActiveTab] = useState<'control' | 'analytics'>('control');
 
+  // Teacher Question, Solution & Student Answers visibility toggles
+  const [showCorrectAnswer, setShowCorrectAnswer] = useState<boolean>(false);
+  const [showStudentCode, setShowStudentCode] = useState<boolean>(false);
+
+  // Round Timer & Countdown state
+  const [elapsedSeconds, setElapsedSeconds] = useState<number>(0);
+  const [countdownTarget, setCountdownTarget] = useState<number | null>(90); // default 90s per round, or null for count-up only
+  const [autoPauseOnZero, setAutoPauseOnZero] = useState<boolean>(false);
+
   const selectedPack =
     CHALLENGE_PACKS.find((p) => p.id === selectedPackId) || CHALLENGE_PACKS[0];
 
-  const loadCloudSessionDetails = async (sessionId: string, roundIdxOverride?: number) => {
+  // Reset answer reveal and elapsed timer when round changes
+  useEffect(() => {
+    setShowCorrectAnswer(false);
+    setElapsedSeconds(0);
+  }, [session?.currentRoundIndex, session?.id]);
+
+  // Tick timer every second when session is 'active'
+  useEffect(() => {
+    if (!session || session.status !== 'active') return;
+    const timer = setInterval(() => {
+      setElapsedSeconds((prev) => {
+        const next = prev + 1;
+        if (
+          countdownTarget !== null &&
+          autoPauseOnZero &&
+          next >= countdownTarget
+        ) {
+          handleSessionControl('leaderboard');
+        }
+        return next;
+      });
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [session?.status, session?.currentRoundIndex, countdownTarget, autoPauseOnZero]);
+
+  const loadCloudSessionDetails = async (
+    sessionId: string,
+    roundIdxOverride?: number
+  ) => {
     if (!supabase) return;
     const { data: sData } = await supabase
       .from('game_sessions')
@@ -97,31 +149,50 @@ export const TeacherDashboard: React.FC = () => {
       });
     }
 
+    const { data: pRows } = await supabase
+      .from('session_players')
+      .select('*')
+      .eq('session_id', sessionId);
+
+    const playerMap = new Map<string, string>();
+    (pRows || []).forEach((r) => playerMap.set(r.id, r.nickname));
+
     const { data: scoreRows } = await supabase
       .from('scores')
       .select('*')
       .eq('session_id', sessionId);
 
-    const mappedScores: RoundSubmission[] = (scoreRows || []).map((s) => ({
-      id: s.id,
-      sessionId: s.session_id,
-      playerId: s.player_id,
-      nickname: '',
-      challengeId: s.challenge_id,
-      roundIndex: s.round_index,
-      submittedCode: '',
-      isCorrect: true,
-      hintsUsed: 0,
-      timeTakenSeconds: 0,
-      pointsAwarded: s.total_points,
-      submittedAt: s.awarded_at,
-    }));
-    setSubmissions(mappedScores);
-
-    const { data: pRows } = await supabase
-      .from('session_players')
+    const { data: attemptRows } = await supabase
+      .from('challenge_attempts')
       .select('*')
-      .eq('session_id', sessionId);
+      .eq('session_id', sessionId)
+      .order('created_at', { ascending: false });
+
+    const mappedScores: RoundSubmission[] = (scoreRows || []).map((s) => {
+      // Find matching attempt to get submitted_code, hints_used, time_taken_seconds
+      const matchingAttempt = (attemptRows || []).find(
+        (a) =>
+          a.player_id === s.player_id &&
+          a.round_index === s.round_index &&
+          a.is_correct
+      );
+      return {
+        id: s.id,
+        sessionId: s.session_id,
+        playerId: s.player_id,
+        nickname: playerMap.get(s.player_id) || 'Student',
+        challengeId: s.challenge_id,
+        roundIndex: s.round_index,
+        submittedCode: matchingAttempt?.submitted_code || '',
+        isCorrect: true,
+        hintsUsed: matchingAttempt?.hints_used ?? 0,
+        timeTakenSeconds: matchingAttempt?.time_taken_seconds ?? 0,
+        pointsAwarded: s.total_points,
+        submittedAt: s.awarded_at,
+      };
+    });
+
+    setSubmissions(mappedScores);
 
     if (pRows) {
       setPlayers(
@@ -173,7 +244,6 @@ export const TeacherDashboard: React.FC = () => {
     const sb = supabase;
     sb.auth.getSession().then(async ({ data: { session: authSession } }) => {
       if (authSession?.user) {
-        // Verify server-side teacher_profiles row
         const { data: profile } = await sb
           .from('teacher_profiles')
           .select('id')
@@ -219,9 +289,18 @@ export const TeacherDashboard: React.FC = () => {
           },
           refreshCloudSession
         )
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'challenge_attempts',
+            filter: `session_id=eq.${session.id}`,
+          },
+          refreshCloudSession
+        )
         .subscribe();
 
-      // Reliable 2-second polling fallback so teacher screen always stays in sync
       const pollInterval = setInterval(refreshCloudSession, 2000);
 
       return () => {
@@ -255,7 +334,6 @@ export const TeacherDashboard: React.FC = () => {
       return;
     }
 
-    // Verify teacher_profiles membership via RLS
     const { data: profile, error: profErr } = await supabase
       .from('teacher_profiles')
       .select('id, display_name')
@@ -315,11 +393,11 @@ export const TeacherDashboard: React.FC = () => {
         });
         setPlayers([]);
         setSubmissions([]);
+        setElapsedSeconds(0);
       }
       return;
     }
 
-    // Demo Mode session creation
     const created = createNewDemoSession({
       title: newTitle,
       packId: selectedPackId,
@@ -328,6 +406,7 @@ export const TeacherDashboard: React.FC = () => {
     setSession(created.session);
     setPlayers(created.players);
     setSubmissions(created.submissions);
+    setElapsedSeconds(0);
   };
 
   const handleSessionControl = async (
@@ -343,7 +422,6 @@ export const TeacherDashboard: React.FC = () => {
           ? nextRoundIndex
           : session.currentRoundIndex;
 
-      // Update local teacher state immediately for snappy UI
       setSession({
         ...session,
         status: nextStatus,
@@ -363,7 +441,6 @@ export const TeacherDashboard: React.FC = () => {
         .maybeSingle();
 
       if (updateErr || !updatedRow) {
-        // Teacher session might have been invalidated; prompt re-auth if needed
         const {
           data: { session: currentAuth },
         } = await supabase.auth.getSession();
@@ -490,7 +567,8 @@ on conflict (id) do nothing;`}
   const totalRounds = session?.challengeIds.length || 1;
   const currentRoundIdx = session?.currentRoundIndex || 0;
   const currentChallengeId = session?.challengeIds[currentRoundIdx];
-  const currentChallenge = CHALLENGES.find((c) => c.id === currentChallengeId);
+  const currentChallenge =
+    CHALLENGES.find((c) => c.id === currentChallengeId) || CHALLENGES[0];
 
   const submittedCount = players.filter((p) => p.currentRoundSubmitted).length;
   const leaderboardEntries = buildLeaderboardEntries(
@@ -499,13 +577,29 @@ on conflict (id) do nothing;`}
     currentRoundIdx
   );
 
-  // Analytics calculations (Section 18)
+  const currentRoundSubmissions = submissions.filter(
+    (s) => s.roundIndex === currentRoundIdx
+  );
+
+  const remainingCountdown =
+    countdownTarget !== null
+      ? Math.max(0, countdownTarget - elapsedSeconds)
+      : null;
+
   const averageScore =
     players.length > 0
       ? Math.round(
           players.reduce((acc, p) => acc + p.totalScore, 0) / players.length
         )
       : 0;
+
+  const studentViewLabels: Record<GameSession['status'], string> = {
+    lobby: 'Waiting Lobby ("Waiting for your teacher to start...")',
+    active: `Coding Round ${currentRoundIdx + 1}: #${currentChallenge.number} ${currentChallenge.title}`,
+    paused: 'Paused Screen ("Game Paused by Teacher — Eyes to the front!")',
+    leaderboard: `Round ${currentRoundIdx + 1} Live Leaderboard`,
+    completed: 'Final Championship Podium (Top 3 Winners)',
+  };
 
   return (
     <div className="space-y-6">
@@ -533,10 +627,10 @@ on conflict (id) do nothing;`}
           </div>
           <div>
             <div className="text-xs font-mono uppercase text-sky-400 font-bold">
-              Classroom Projector View
+              Classroom Projector &amp; Instructor Control Centre
             </div>
             <h1 className="text-2xl font-display font-bold text-white">
-              Teacher Championship Control Centre
+              Teacher Championship Dashboard
             </h1>
           </div>
         </div>
@@ -583,113 +677,253 @@ on conflict (id) do nothing;`}
 
       {activeTab === 'control' ? (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-          {/* Left Column: Create / Configure Championship */}
-          <div className="lg:col-span-4 rounded-2xl border-2 border-arena-border bg-arena-card/90 p-5 space-y-4 h-fit">
-            <h2 className="text-lg font-display font-bold text-white flex items-center gap-2">
-              <PlusCircle className="w-5 h-5 text-teal-400" />
-              Create New Championship
-            </h2>
+          {/* Left Column: Create / Configure Championship & Round Selector */}
+          <div className="lg:col-span-4 space-y-5">
+            <div className="rounded-2xl border-2 border-arena-border bg-arena-card/90 p-5 space-y-4">
+              <h2 className="text-lg font-display font-bold text-white flex items-center gap-2">
+                <PlusCircle className="w-5 h-5 text-teal-400" />
+                Create New Championship
+              </h2>
 
-            <form onSubmit={handleCreateChampionship} className="space-y-3.5">
-              <div>
-                <label
-                  htmlFor="session-title"
-                  className="block text-xs font-mono uppercase text-slate-300 mb-1"
-                >
-                  Session Title
-                </label>
-                <input
-                  id="session-title"
-                  type="text"
-                  value={newTitle}
-                  onChange={(e) => setNewTitle(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-sm text-white focus:outline-none focus:border-sky-400"
-                />
-              </div>
+              <form onSubmit={handleCreateChampionship} className="space-y-3.5">
+                <div>
+                  <label
+                    htmlFor="session-title"
+                    className="block text-xs font-mono uppercase text-slate-300 mb-1"
+                  >
+                    Session Title
+                  </label>
+                  <input
+                    id="session-title"
+                    type="text"
+                    value={newTitle}
+                    onChange={(e) => setNewTitle(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-sm text-white focus:outline-none focus:border-sky-400"
+                  />
+                </div>
 
-              <div>
-                <label
-                  htmlFor="pack-select"
-                  className="block text-xs font-mono uppercase text-slate-300 mb-1"
+                <div>
+                  <label
+                    htmlFor="pack-select"
+                    className="block text-xs font-mono uppercase text-slate-300 mb-1"
+                  >
+                    Challenge Pack
+                  </label>
+                  <select
+                    id="pack-select"
+                    value={selectedPackId}
+                    onChange={(e) => {
+                      const pack = CHALLENGE_PACKS.find(
+                        (p) => p.id === e.target.value
+                      );
+                      setSelectedPackId(e.target.value);
+                      if (pack) setChallengeCount(pack.challengeIds.length);
+                    }}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-sm text-white focus:outline-none focus:border-sky-400"
+                  >
+                    {CHALLENGE_PACKS.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-slate-400 mt-1">
+                    {selectedPack.description}
+                  </p>
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="num-challenges"
+                    className="block text-xs font-mono uppercase text-slate-300 mb-1"
+                  >
+                    Number of Challenges ({challengeCount})
+                  </label>
+                  <input
+                    id="num-challenges"
+                    type="range"
+                    min={1}
+                    max={selectedPack.challengeIds.length}
+                    value={Math.min(
+                      challengeCount,
+                      selectedPack.challengeIds.length
+                    )}
+                    onChange={(e) => setChallengeCount(Number(e.target.value))}
+                    className="w-full accent-sky-400"
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  className="w-full py-2.5 rounded-xl bg-teal-500 hover:bg-teal-400 text-slate-950 font-display font-bold text-sm transition flex items-center justify-center gap-1.5"
                 >
-                  Challenge Pack
-                </label>
-                <select
-                  id="pack-select"
-                  value={selectedPackId}
-                  onChange={(e) => {
-                    const pack = CHALLENGE_PACKS.find(
-                      (p) => p.id === e.target.value
-                    );
-                    setSelectedPackId(e.target.value);
-                    if (pack) setChallengeCount(pack.challengeIds.length);
-                  }}
-                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-sm text-white focus:outline-none focus:border-sky-400"
-                >
-                  {CHALLENGE_PACKS.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
-                <p className="text-xs text-slate-400 mt-1">
-                  {selectedPack.description}
+                  <RefreshCw className="w-4 h-4" /> Generate New 6-Digit PIN
+                </button>
+              </form>
+            </div>
+
+            {/* Direct Round Navigator (Jump to any challenge in the session) */}
+            {session && (
+              <div className="rounded-2xl border-2 border-arena-border bg-arena-card/90 p-5 space-y-3">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-display font-bold text-white uppercase tracking-wider">
+                    Jump to Any Round ({totalRounds} Challenges)
+                  </h3>
+                  <span className="text-xs font-mono text-sky-300">
+                    Current: R{currentRoundIdx + 1}
+                  </span>
+                </div>
+                <p className="text-xs text-slate-400">
+                  Click any challenge below to send all connected students directly to that round:
                 </p>
+                <div className="space-y-1.5 max-h-80 overflow-y-auto pr-1">
+                  {session.challengeIds.map((cid, idx) => {
+                    const ch = CHALLENGES.find((c) => c.id === cid);
+                    const isCurrent = idx === currentRoundIdx;
+                    return (
+                      <button
+                        key={`${cid}-${idx}`}
+                        type="button"
+                        onClick={() => handleSessionControl('active', idx)}
+                        className={`w-full text-left px-3 py-2 rounded-xl border text-xs transition flex items-center justify-between gap-2 ${
+                          isCurrent
+                            ? 'bg-sky-500/20 border-sky-400 text-white font-bold'
+                            : 'bg-slate-950/80 border-slate-800 text-slate-300 hover:border-slate-600'
+                        }`}
+                      >
+                        <span className="truncate">
+                          <span className="font-mono text-sky-400 mr-1.5">
+                            R{idx + 1}.
+                          </span>
+                          {ch ? `${ch.title} (#${ch.number})` : cid}
+                        </span>
+                        <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-slate-900 text-slate-400 shrink-0">
+                          {ch?.engineType.replace('_', ' ')}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
-
-              <div>
-                <label
-                  htmlFor="num-challenges"
-                  className="block text-xs font-mono uppercase text-slate-300 mb-1"
-                >
-                  Number of Challenges ({challengeCount})
-                </label>
-                <input
-                  id="num-challenges"
-                  type="range"
-                  min={1}
-                  max={selectedPack.challengeIds.length}
-                  value={Math.min(
-                    challengeCount,
-                    selectedPack.challengeIds.length
-                  )}
-                  onChange={(e) => setChallengeCount(Number(e.target.value))}
-                  className="w-full accent-sky-400"
-                />
-              </div>
-
-              <button
-                type="submit"
-                className="w-full py-2.5 rounded-xl bg-teal-500 hover:bg-teal-400 text-slate-950 font-display font-bold text-sm transition flex items-center justify-center gap-1.5"
-              >
-                <RefreshCw className="w-4 h-4" /> Generate New 6-Digit PIN
-              </button>
-            </form>
+            )}
           </div>
 
-          {/* Right Column: Active Session Projector & Controls */}
+          {/* Right Column: Active Session Projector, Timer, Question/Solution Viewer & Student Answers */}
           <div className="lg:col-span-8 space-y-5">
             {session && (
-              <div className="rounded-3xl border-2 border-sky-500/60 bg-slate-900/95 p-6 shadow-2xl space-y-6">
-                {/* Large Projector PIN Header */}
+              <div className="rounded-3xl border-2 border-sky-500/60 bg-slate-900/95 p-6 shadow-2xl space-y-5">
+                {/* Large Projector PIN & Timer Header */}
                 <div className="flex flex-wrap items-center justify-between gap-4 pb-5 border-b border-slate-800">
-                  <div>
+                  <div className="space-y-1">
                     <span className="px-3 py-1 rounded-full bg-sky-500/20 text-sky-300 font-mono text-xs uppercase font-bold">
                       Status: {session.status.toUpperCase()}
                     </span>
-                    <h2 className="text-2xl sm:text-3xl font-display font-bold text-white mt-2">
+                    <h2 className="text-2xl sm:text-3xl font-display font-bold text-white mt-1">
                       {session.title}
                     </h2>
+                    <div className="text-xs sm:text-sm text-teal-300 flex items-center gap-1.5 pt-1">
+                      <Eye className="w-4 h-4 shrink-0" />
+                      <span>
+                        <strong>Student Screens Showing:</strong>{' '}
+                        {studentViewLabels[session.status]}
+                      </span>
+                    </div>
                   </div>
 
-                  <div className="px-6 py-3 rounded-2xl bg-slate-950 border-2 border-amber-400 text-center shadow-lg">
-                    <div className="text-xs font-mono uppercase text-amber-300 font-bold">
-                      JOIN WITH GAME PIN
+                  <div className="flex flex-wrap items-center gap-3">
+                    {/* Live Round Timer Box */}
+                    <div
+                      className={`px-5 py-3 rounded-2xl border-2 text-center shadow-lg ${
+                        remainingCountdown !== null && remainingCountdown <= 15
+                          ? 'bg-rose-950/80 border-rose-500 text-rose-200 animate-pulse'
+                          : 'bg-slate-950 border-sky-500/60 text-white'
+                      }`}
+                    >
+                      <div className="text-[11px] font-mono uppercase text-sky-300 font-bold flex items-center justify-center gap-1">
+                        <Clock className="w-3.5 h-3.5" />
+                        {remainingCountdown !== null
+                          ? 'TIME REMAINING'
+                          : 'ROUND TIME'}
+                      </div>
+                      <div className="text-3xl sm:text-4xl font-mono font-extrabold tracking-wider">
+                        {remainingCountdown !== null
+                          ? formatTimer(remainingCountdown)
+                          : formatTimer(elapsedSeconds)}
+                      </div>
                     </div>
-                    <div className="text-3xl sm:text-5xl font-mono font-extrabold tracking-widest text-white">
-                      {session.pin}
+
+                    {/* Large Game PIN Box */}
+                    <div className="px-6 py-3 rounded-2xl bg-slate-950 border-2 border-amber-400 text-center shadow-lg">
+                      <div className="text-xs font-mono uppercase text-amber-300 font-bold">
+                        JOIN WITH GAME PIN
+                      </div>
+                      <div className="text-3xl sm:text-4xl font-mono font-extrabold tracking-widest text-white">
+                        {session.pin}
+                      </div>
                     </div>
                   </div>
+                </div>
+
+                {/* Timer Configuration Bar */}
+                <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-xs">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-mono uppercase text-slate-400 font-semibold flex items-center gap-1">
+                      <Clock className="w-3.5 h-3.5 text-sky-400" /> Round Timer Preset:
+                    </span>
+                    {[
+                      { label: 'Count Up Only', val: null },
+                      { label: '60s', val: 60 },
+                      { label: '90s', val: 90 },
+                      { label: '120s', val: 120 },
+                      { label: '180s', val: 180 },
+                    ].map((preset) => (
+                      <button
+                        key={String(preset.val)}
+                        type="button"
+                        onClick={() => {
+                          setCountdownTarget(preset.val);
+                          setElapsedSeconds(0);
+                        }}
+                        className={`px-2.5 py-1 rounded-lg font-mono transition ${
+                          countdownTarget === preset.val
+                            ? 'bg-sky-500 text-slate-950 font-bold'
+                            : 'bg-slate-900 text-slate-300 hover:bg-slate-800 border border-slate-700'
+                        }`}
+                      >
+                        {preset.label}
+                      </button>
+                    ))}
+                    {countdownTarget !== null && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setCountdownTarget((prev) => (prev || 60) + 30)
+                        }
+                        className="px-2.5 py-1 rounded-lg bg-teal-500/20 text-teal-300 border border-teal-500/40 font-mono hover:bg-teal-500/30"
+                      >
+                        +30s
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setElapsedSeconds(0)}
+                      className="px-2.5 py-1 rounded-lg bg-slate-800 text-slate-300 hover:bg-slate-700 font-mono"
+                    >
+                      Reset Clock
+                    </button>
+                  </div>
+
+                  {countdownTarget !== null && (
+                    <label className="flex items-center gap-1.5 text-slate-300 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={autoPauseOnZero}
+                        onChange={(e) => setAutoPauseOnZero(e.target.checked)}
+                        className="accent-sky-400"
+                      />
+                      <span>Auto-show Leaderboard at 00:00</span>
+                    </label>
+                  )}
                 </div>
 
                 {/* Live Round & Submission Counter */}
@@ -710,16 +944,14 @@ on conflict (id) do nothing;`}
                     <div className="text-2xl font-display font-bold text-white mt-1">
                       Round {currentRoundIdx + 1} of {totalRounds}
                     </div>
-                    {currentChallenge && (
-                      <div className="text-xs text-teal-300 truncate mt-0.5">
-                        #{currentChallenge.number}: {currentChallenge.title}
-                      </div>
-                    )}
+                    <div className="text-xs text-teal-300 truncate mt-0.5">
+                      #{currentChallenge.number}: {currentChallenge.title}
+                    </div>
                   </div>
 
                   <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800">
                     <div className="text-xs font-mono uppercase text-slate-400">
-                      Round Submissions
+                      Round {currentRoundIdx + 1} Solved
                     </div>
                     <div className="text-2xl font-display font-bold text-emerald-400 mt-1 flex items-center gap-2">
                       <CheckCircle2 className="w-6 h-6" /> {submittedCount} /{' '}
@@ -728,8 +960,8 @@ on conflict (id) do nothing;`}
                   </div>
                 </div>
 
-                {/* Teacher Action Buttons */}
-                <div className="flex flex-wrap items-center gap-3 pt-2">
+                {/* Teacher Master Screen & Round Controls */}
+                <div className="flex flex-wrap items-center gap-2.5 pt-1">
                   {session.status === 'lobby' && (
                     <button
                       type="button"
@@ -740,6 +972,31 @@ on conflict (id) do nothing;`}
                     </button>
                   )}
 
+                  {currentRoundIdx > 0 && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleSessionControl('active', currentRoundIdx - 1)
+                      }
+                      className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-600 font-semibold text-xs transition"
+                    >
+                      <SkipBack className="w-4 h-4" /> Prev (R{currentRoundIdx})
+                    </button>
+                  )}
+
+                  {session.status !== 'active' && session.status !== 'lobby' && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleSessionControl('active', currentRoundIdx)
+                      }
+                      className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-display font-bold text-sm transition"
+                    >
+                      <Play className="w-4 h-4 fill-current" /> Show Challenge (R
+                      {currentRoundIdx + 1}) on Student Screens
+                    </button>
+                  )}
+
                   {session.status === 'active' && (
                     <>
                       <button
@@ -747,7 +1004,7 @@ on conflict (id) do nothing;`}
                         onClick={() => handleSessionControl('paused')}
                         className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 font-semibold text-sm transition"
                       >
-                        <Pause className="w-4 h-4" /> Pause Game
+                        <Pause className="w-4 h-4" /> Pause Students
                       </button>
 
                       <button
@@ -755,7 +1012,7 @@ on conflict (id) do nothing;`}
                         onClick={() => handleSessionControl('leaderboard')}
                         className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-display font-bold text-sm transition"
                       >
-                        <Trophy className="w-4 h-4" /> Reveal Round Leaderboard
+                        <Trophy className="w-4 h-4" /> Show Leaderboard to Class
                       </button>
 
                       {!isSupabaseConfigured && (
@@ -776,30 +1033,18 @@ on conflict (id) do nothing;`}
                     </>
                   )}
 
-                  {session.status === 'paused' && (
+                  {currentRoundIdx < totalRounds - 1 && (
                     <button
                       type="button"
-                      onClick={() => handleSessionControl('active')}
-                      className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-display font-bold text-sm transition"
+                      onClick={() =>
+                        handleSessionControl('active', currentRoundIdx + 1)
+                      }
+                      className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-400 text-slate-950 font-display font-bold text-sm transition"
                     >
-                      <Play className="w-4 h-4 fill-current" /> Resume Round
+                      <SkipForward className="w-4 h-4" /> Next Challenge (Round{' '}
+                      {currentRoundIdx + 2})
                     </button>
                   )}
-
-                  {(session.status === 'active' ||
-                    session.status === 'leaderboard') &&
-                    currentRoundIdx < totalRounds - 1 && (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          handleSessionControl('active', currentRoundIdx + 1)
-                        }
-                        className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-400 text-slate-950 font-display font-bold text-sm transition"
-                      >
-                        <SkipForward className="w-4 h-4" /> Next Challenge (Round{' '}
-                        {currentRoundIdx + 2})
-                      </button>
-                    )}
 
                   {session.status !== 'completed' && (
                     <button
@@ -807,7 +1052,7 @@ on conflict (id) do nothing;`}
                       onClick={() => handleSessionControl('completed')}
                       className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-display font-bold text-sm transition"
                     >
-                      <Trophy className="w-4 h-4" /> End Championship &amp; Show Podium
+                      <Trophy className="w-4 h-4" /> Final Podium
                     </button>
                   )}
 
@@ -816,29 +1061,279 @@ on conflict (id) do nothing;`}
                     onClick={handleDeleteOrResetSession}
                     className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30 text-xs font-semibold ml-auto transition"
                   >
-                    <Trash2 className="w-4 h-4" /> Reset / Delete Session
+                    <Trash2 className="w-4 h-4" /> Reset / Delete
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* ================================================================= */}
+            {/* TEACHER QUESTION, INITIAL CODE & MODEL SOLUTION INSPECTOR         */}
+            {/* ================================================================= */}
+            {session && currentChallenge && (
+              <div className="rounded-3xl border-2 border-arena-border bg-arena-card/95 p-6 shadow-xl space-y-5">
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-4">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="px-2.5 py-0.5 rounded bg-sky-500/20 text-sky-300 font-mono text-xs font-bold">
+                        ROUND {currentRoundIdx + 1} QUESTION • CHALLENGE #
+                        {currentChallenge.number}
+                      </span>
+                      <span className="px-2.5 py-0.5 rounded bg-slate-800 text-slate-300 font-mono text-xs">
+                        {currentChallenge.engineType.replace('_', ' ').toUpperCase()}
+                      </span>
+                      <span className="px-2.5 py-0.5 rounded bg-slate-800 text-amber-300 font-mono text-xs">
+                        {currentChallenge.difficulty}
+                      </span>
+                    </div>
+                    <h3 className="text-xl sm:text-2xl font-display font-bold text-white mt-1.5">
+                      {currentChallenge.title}
+                    </h3>
+                  </div>
+
+                  {/* Toggle Correct Answer Button */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      sound.playClick();
+                      setShowCorrectAnswer((prev) => !prev);
+                    }}
+                    className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-xl font-display font-bold text-sm border transition ${
+                      showCorrectAnswer
+                        ? 'bg-amber-500 text-slate-950 border-amber-400 shadow-lg shadow-amber-500/20'
+                        : 'bg-slate-900 hover:bg-slate-800 text-amber-300 border-amber-500/40'
+                    }`}
+                  >
+                    {showCorrectAnswer ? (
+                      <>
+                        <EyeOff className="w-4 h-4" /> Hide Correct Answer &amp; Hints
+                      </>
+                    ) : (
+                      <>
+                        <Eye className="w-4 h-4" /> Show Correct Answer &amp; Hints
+                      </>
+                    )}
                   </button>
                 </div>
 
-                {/* Lobby Joined Nicknames List */}
-                <div className="pt-4 border-t border-slate-800">
-                  <div className="text-xs font-mono uppercase text-slate-400 mb-2">
-                    Joined Student Nicknames ({players.length})
+                {/* Question / Mission Prompt that students see */}
+                <div className="space-y-2">
+                  <div className="text-xs font-mono uppercase text-sky-300 font-bold">
+                    Student Mission / Question Prompt:
                   </div>
-                  <div className="flex flex-wrap gap-2">
-                    {players.map((p) => (
-                      <span
-                        key={p.id}
-                        className="px-3.5 py-1.5 rounded-xl bg-slate-950 border border-slate-700 font-display font-semibold text-sm text-white flex items-center gap-2"
-                      >
-                        {p.nickname}
-                        {p.currentRoundSubmitted && (
-                          <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                        )}
-                      </span>
-                    ))}
+                  <p className="text-base sm:text-lg text-slate-100 bg-slate-950/80 p-4 rounded-xl border border-slate-800">
+                    {currentChallenge.mission}
+                  </p>
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-400">
+                    <span>
+                      <strong className="text-slate-300">Learning Objective:</strong>{' '}
+                      {currentChallenge.learningObjective}
+                    </span>
+                    {currentChallenge.simulatedInputs &&
+                      currentChallenge.simulatedInputs.length > 0 && (
+                        <span className="font-mono text-indigo-300">
+                          Simulated Input():{' '}
+                          <strong>
+                            {currentChallenge.simulatedInputs.join(', ')}
+                          </strong>
+                        </span>
+                      )}
                   </div>
                 </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {/* Left: Initial Code / Blocks shown to students */}
+                  <div className="rounded-xl border border-slate-800 bg-slate-950 p-4 space-y-2">
+                    <div className="text-xs font-mono uppercase text-slate-400 font-bold flex items-center gap-1.5">
+                      <Code2 className="w-4 h-4 text-sky-400" />
+                      Initial Code / Blocks Shown to Students:
+                    </div>
+                    <div className="space-y-1.5 font-mono text-sm sm:text-base pt-1">
+                      {(currentChallenge.engineType === 'code_builder' &&
+                      currentChallenge.shuffledBlocks
+                        ? currentChallenge.shuffledBlocks
+                        : currentChallenge.initialLines
+                      ).map((line, i) => (
+                        <div
+                          key={i}
+                          className="flex items-center gap-2.5 px-2.5 py-1.5 rounded bg-slate-900/90"
+                        >
+                          <span className="w-5 text-right text-xs text-slate-500 select-none">
+                            {i + 1}
+                          </span>
+                          <div className="overflow-x-auto">
+                            <HighlightedPythonLine line={line} />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Right: Correct Answer & Expected Output (Revealed when showCorrectAnswer is true) */}
+                  <div className="rounded-xl border border-emerald-500/40 bg-emerald-950/15 p-4 space-y-3 flex flex-col justify-between">
+                    {showCorrectAnswer ? (
+                      <div className="space-y-3">
+                        <div className="text-xs font-mono uppercase text-emerald-300 font-bold flex items-center gap-1.5">
+                          <Sparkles className="w-4 h-4 text-amber-400" />
+                          Correct Python Solution:
+                        </div>
+                        <div className="space-y-1.5 font-mono text-sm sm:text-base">
+                          {currentChallenge.correctSolution
+                            .split('\n')
+                            .map((line, i) => (
+                              <div
+                                key={i}
+                                className="flex items-center gap-2.5 px-2.5 py-1.5 rounded bg-slate-950 border border-emerald-500/30"
+                              >
+                                <span className="w-5 text-right text-xs text-emerald-400 select-none">
+                                  {i + 1}
+                                </span>
+                                <div className="overflow-x-auto">
+                                  <HighlightedPythonLine line={line} />
+                                </div>
+                              </div>
+                            ))}
+                        </div>
+
+                        <div className="pt-2 border-t border-emerald-500/20">
+                          <div className="text-xs font-mono uppercase text-slate-400 flex items-center gap-1 mb-1">
+                            <Terminal className="w-3.5 h-3.5 text-emerald-400" />
+                            Expected Terminal Output:
+                          </div>
+                          <pre className="p-2.5 rounded-lg bg-slate-950 text-emerald-300 font-mono text-sm whitespace-pre-wrap">
+                            {currentChallenge.expectedOutput}
+                          </pre>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="h-full flex flex-col items-center justify-center text-center py-6 space-y-2 text-slate-400">
+                        <EyeOff className="w-8 h-8 text-slate-500" />
+                        <div className="text-sm font-semibold text-slate-300">
+                          Model Solution Hidden for Classroom Projection
+                        </div>
+                        <p className="text-xs max-w-xs">
+                          Click <strong>&quot;Show Correct Answer &amp; Hints&quot;</strong> above to reveal the solution when reviewing with your class.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* 3 Progressive Hints when Answer Key is expanded */}
+                {showCorrectAnswer && (
+                  <div className="pt-2 border-t border-slate-800 space-y-2">
+                    <div className="text-xs font-mono uppercase text-amber-300 font-bold flex items-center gap-1.5">
+                      <Lightbulb className="w-4 h-4" /> Three Progressive Hints Available to Students:
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                      {currentChallenge.hints.map((h, i) => (
+                        <div
+                          key={i}
+                          className="p-3 rounded-xl bg-slate-950 border border-amber-500/30 text-xs text-slate-200"
+                        >
+                          <div className="font-bold text-amber-400 mb-1">
+                            Hint {i + 1}:
+                          </div>
+                          <div className="whitespace-pre-line">{h}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ================================================================= */}
+            {/* LIVE STUDENT ANSWERS & SUBMITTED CODE INSPECTOR                   */}
+            {/* ================================================================= */}
+            {session && (
+              <div className="rounded-3xl border-2 border-arena-border bg-arena-card/95 p-6 shadow-xl space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-3">
+                  <div>
+                    <h3 className="text-lg font-display font-bold text-white flex items-center gap-2">
+                      <Users className="w-5 h-5 text-sky-400" />
+                      Round {currentRoundIdx + 1} Student Status &amp; Answers (
+                      {submittedCount}/{players.length} Solved)
+                    </h3>
+                    <p className="text-xs text-slate-400">
+                      See who has finished Round {currentRoundIdx + 1} and optionally inspect their submitted Python code.
+                    </p>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setShowStudentCode((prev) => !prev)}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-sky-300 border border-sky-500/40 text-xs font-semibold transition"
+                  >
+                    {showStudentCode ? (
+                      <>
+                        <EyeOff className="w-3.5 h-3.5" /> Hide Student Code
+                      </>
+                    ) : (
+                      <>
+                        <Code2 className="w-3.5 h-3.5" /> Show Student Submitted Code
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                {players.length === 0 ? (
+                  <div className="text-sm text-slate-400 py-4 text-center">
+                    No students have joined with PIN <strong>{session.pin}</strong> yet.
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {players.map((p) => {
+                      const sub = currentRoundSubmissions.find(
+                        (s) => s.playerId === p.id
+                      );
+                      return (
+                        <div
+                          key={p.id}
+                          className={`p-3.5 rounded-xl border transition space-y-2 ${
+                            p.currentRoundSubmitted
+                              ? 'bg-emerald-950/20 border-emerald-500/50'
+                              : 'bg-slate-950 border-slate-800'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-display font-bold text-white text-sm flex items-center gap-2">
+                              {p.nickname}
+                              {p.currentRoundSubmitted ? (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 font-mono text-[11px]">
+                                  <CheckCircle2 className="w-3 h-3" /> Solved
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 font-mono text-[11px]">
+                                  <Clock className="w-3 h-3" /> Coding...
+                                </span>
+                              )}
+                            </span>
+
+                            <span className="font-mono text-xs text-amber-300 font-bold">
+                              {sub ? `+${sub.pointsAwarded} pts` : `${p.totalScore} total`}
+                            </span>
+                          </div>
+
+                          {sub && (
+                            <div className="text-[11px] font-mono text-slate-400 flex items-center gap-3">
+                              <span>Hints used: {sub.hintsUsed}</span>
+                              {sub.timeTakenSeconds > 0 && (
+                                <span>Time: {sub.timeTakenSeconds}s</span>
+                              )}
+                            </div>
+                          )}
+
+                          {showStudentCode && sub?.submittedCode && (
+                            <pre className="p-2.5 rounded-lg bg-slate-950 border border-slate-800 font-mono text-xs text-sky-200 overflow-x-auto whitespace-pre-wrap">
+                              {sub.submittedCode}
+                            </pre>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             )}
 
